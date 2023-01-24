@@ -3,8 +3,13 @@ from fastapi.security import HTTPBearer
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List
-
 from jwt_manager import create_token, validate_token
+from config.database import Base, engine, Session
+from models.movie import Movie as MovieModel
+from fastapi.encoders import jsonable_encoder
+
+
+Base.metadata.create_all(bind=engine)
 
 
 class JWTToken(HTTPBearer):
@@ -22,7 +27,7 @@ class User(BaseModel):
 
 class Movie(BaseModel):
     id: Optional[int] = None
-    name: str = Field(default="No name", max_length=100, min_length=1)
+    title: str = Field(default="No name", max_length=100, min_length=1)
     year: int = Field(default=2020, ge=1900, le=2023)
     overview: str = Field(default="No overview", max_length=1000, min_length=5)
     rating: float = Field(default=0.0, ge=0.0, le=10.0)
@@ -32,7 +37,7 @@ class Movie(BaseModel):
         schema_extra = {
             "example": {
                 "id": 5,
-                "name": "The Matrix",
+                "title": "The Matrix",
                 "year": 1999,
                 "overview": "A computer hacker learns from mysterious rebels about the true nature of his reality and his role in the war against its controllers.",
                 "rating": 8.7,
@@ -46,22 +51,7 @@ app.title = "Movies API"
 app.version = "0.0.1"
 
 movies = [
-    {
-        "id": 1,
-        "name": "The Matrix",
-        "year": 1999,
-        "overview": "A computer hacker learns from mysterious rebels about the true nature of his reality and his role in the war against its controllers.",
-        "rating": 8.7,
-        'category': 'Acción'
-    },
-    {
-        "id": 2,
-        "name": "Blanca nieves",
-        "year": 1949,
-        "overview": "Una mujer con 7 hombres en el bosque.",
-        "rating": 8.7,
-        'category': 'Ficción'
-    },
+
 ]
 
 
@@ -76,23 +66,27 @@ def login(user: User) -> dict:
 
 @app.get("/", tags=["movies"], response_model=List[Movie], dependencies=[Depends(JWTToken())])
 def get_movies() -> List[Movie]:
-    return JSONResponse(content=movies, status_code=200)
+    db = Session()
+    result = db.query(MovieModel).all()
+    return JSONResponse(content=jsonable_encoder(result), status_code=200)
 
 
 @app.get("/movies/{id}", tags=["movies"], response_model=Movie)
-def get_movies(id: int = Path(ge=1, le=len(movies))) -> Movie:
-    for movie in movies:
-        if movie['id'] == id:
-            return JSONResponse(content=movie, status_code=200)
-    return JSONResponse(content={"error": "Movie not found"}, status_code=404)
+def get_movies(id: int = Path()) -> Movie:
+    db = Session()
+    result = db.query(MovieModel).filter(MovieModel.id == id).first()
+    if not result:
+        return JSONResponse(content={"error": "Movie not found"}, status_code=404)
+    return JSONResponse(content=jsonable_encoder(result), status_code=200)
 
 
 @app.get("/movies/category/", tags=["movies"], response_model=List[Movie])
 def get_movies_by_category(category: str = Query(min_length=1, max_length=15)):
-    data = list(filter(lambda movie: movie['category'] == category, movies))
-    if len(data) == 0:
+    db = Session()
+    result = db.query(MovieModel).filter(MovieModel.category == category).all()
+    if not result:
         return JSONResponse(content={"error": "Category not found"}, status_code=404)
-    return JSONResponse(content=data, status_code=200)
+    return JSONResponse(content=jsonable_encoder(result), status_code=200)
 
 
 @app.get("/movies/year/", tags=["movies"], response_model=List[Movie])
@@ -103,31 +97,43 @@ def get_movies_by_category(year: int):
     return JSONResponse(content=data, status_code=200)
 
 
-@app.post('/movie', tags=["movies"], response_model=Movie)
-def create_movie(movie: Movie) -> Movie:
-    movies.append(movie.dict())
-    return JSONResponse(content=movies[-1], status_code=201)
+@app.post('/movie', tags=["movies"])
+def create_movie(movie: Movie):
+    db = Session()
+    new_movie = MovieModel(**movie.dict())
+    db.add(new_movie)
+    db.commit()
+    return JSONResponse(content={
+        "success": True,
+        "message": "La película se a creado con exito"
+    }, status_code=201)
 
 
 @app.put('/movies/', tags=["movies"], response_model=dict)
-def update_movie(movie_path: Movie) -> dict:
-    for movie in movies:
-        if movie['id'] == movie_path.id:
-            movie['name'] = movie_path.name
-            movie['year'] = movie_path.year
-            movie['overview'] = movie_path.overview
-            movie['rating'] = movie_path.rating
-            movie['category'] = movie_path.category
-            return JSONResponse(content=movie_path.dict(), status_code=200)
+def update_movie(id: int, movie_path: Movie) -> dict:
 
-    return JSONResponse(content={"error": "Movie not found"}, status_code=404)
+    db = Session()
+    result = db.query(MovieModel).filter(
+        MovieModel.id == id).first()
+    if not result:
+        return JSONResponse(content={"error": "Movie not found", "success": False}, status_code=404)
+
+    result.title = movie_path.title
+    result.year = movie_path.year
+    result.overview = movie_path.overview
+    result.rating = movie_path.rating
+    result.category = movie_path.category
+    db.commit()
+    return JSONResponse(content={"message": "Se ha modificado la película", "success": True}, status_code=200)
 
 
 @app.delete('/movies/{id}', tags=["movies"], response_model=dict)
 def update_movie(id: int) -> dict:
-    for movie in movies:
-        if movie['id'] == id:
-            movies.remove(movie)
-            return JSONResponse({'message': 'Movie deleted', 'id': movie['id']}, status_code=200)
+    db = Session()
+    result = db.query(MovieModel).filter(MovieModel.id == id).first()
+    if not result:
+        return JSONResponse(content={"error": "Movie not found", "success": False}, status_code=404)
 
-    return JSONResponse(content={"error": "Movie not found"}, status_code=404)
+    db.delete(result)
+    db.commit()
+    return JSONResponse(content={"message": "Pelicula borrada correctamnte", "success": True}, status_code=200)
